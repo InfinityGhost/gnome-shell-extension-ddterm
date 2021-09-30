@@ -1,0 +1,39 @@
+---
+- hosts: all
+  tasks:
+    - ansible.builtin.package:
+        name:
+          - gnome-session-xsession
+          - gnome-extensions-app
+          - vte291
+          - libxslt
+          - gtk3-devel
+          - gtk4-devel
+          - glib2-devel
+          - xdotool
+          - xautomation
+          - sudo
+          - make
+          - patch
+          - jq
+          - unzip
+          - git
+          - npm
+          - gdm
+        state: latest
+      become: yes
+    - ansible.builtin.file:
+        path: /etc/systemd/system/default.target
+        src: /usr/lib/systemd/system/graphical.target
+        state: link
+      become: yes
+    - ansible.builtin.systemd:
+        name: graphical.target
+        state: started
+      become: yes
+    - ansible.builtin.command: npm ci
+      args:
+        chdir: /vagrant/
+    - ansible.builtin.command: make install
+      args:
+        chdir: /vagrant/
