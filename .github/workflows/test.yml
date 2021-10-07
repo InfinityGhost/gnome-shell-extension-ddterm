@@ -24,7 +24,7 @@ jobs:
           - fedora-version: '33'
             session: 'gnome-wayland-nested-dual-monitor'
     env:
-      IMAGE: ghcr.io/amezin/gnome-shell-pod-${{ matrix.fedora-version }}:master
+      IMAGE: ghcr.io/amezin/gnome-shell-pod-${{ matrix.fedora-version }}:fedoraproject-registry
     steps:
     - uses: actions/checkout@v2
     - uses: actions/setup-node@v2-beta
