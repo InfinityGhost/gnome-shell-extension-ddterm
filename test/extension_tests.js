@@ -204,59 +204,6 @@ function async_wait_current_window(reporter) {
     }));
 }
 
-function wait_window_settle(reporter, idle_timeout_ms = DEFAULT_IDLE_TIMEOUT_MS) {
-    return with_timeout(new Promise(resolve => {
-        const win = Extension.window_manager.current_window;
-        const cursor_tracker = Meta.CursorTracker.get_for_display(global.display);
-        let timer_id = null;
-        const handlers = new ConnectionSet();
-
-        reporter.print('Waiting for the window to stop generating events');
-        const child_reporter = reporter.child();
-
-        const ready = () => {
-            handlers.disconnect();
-            resolve();
-            child_reporter.print('Idle timeout elapsed');
-            return GLib.SOURCE_REMOVE;
-        };
-
-        const restart_timer = () => {
-            if (timer_id !== null)
-                GLib.source_remove(timer_id);
-
-            timer_id = GLib.timeout_add(GLib.PRIORITY_LOW, idle_timeout_ms, ready);
-        };
-
-        handlers.connect(win, 'position-changed', () => {
-            child_reporter.print('Restarting wait because of position-changed signal');
-            restart_timer();
-        });
-        handlers.connect(win, 'size-changed', () => {
-            child_reporter.print('Restarting wait because of size-changed signal');
-            restart_timer();
-        });
-        handlers.connect(win, 'notify::maximized-vertically', () => {
-            child_reporter.print('Restarting wait because of notify::maximized-vertically signal');
-            restart_timer();
-        });
-        handlers.connect(win, 'notify::maximized-horizontally', () => {
-            child_reporter.print('Restarting wait because of notify::maximized-horizontally signal');
-            restart_timer();
-        });
-        handlers.connect(Extension.window_manager, 'move-resize-requested', () => {
-            child_reporter.print('Restarting wait because of move-resize-requested signal');
-            restart_timer();
-        });
-        handlers.connect(cursor_tracker, CURSOR_TRACKER_MOVED_SIGNAL, () => {
-            child_reporter.print('Restarting wait because cursor moved');
-            restart_timer();
-        });
-
-        restart_timer();
-    }));
-}
-
 function async_wait_signal(object, signal, predicate = () => true) {
     return with_timeout(new Promise(resolve => {
         const pred_check = () => {
@@ -412,7 +359,7 @@ async function test_show(reporter, window_size, window_maximize, window_pos, mon
     Extension.toggle();
 
     await async_wait_current_window(child_reporter);
-    await wait_window_settle(child_reporter);
+    await async_sleep(DEFAULT_IDLE_TIMEOUT_MS);
 
     const monitor_index = window_monitor_index(monitor_config);
     const should_maximize = window_maximize === WindowMaximizeMode.EARLY || (window_size === 1.0 && settings.get_boolean('window-maximize'));
@@ -420,7 +367,7 @@ async function test_show(reporter, window_size, window_maximize, window_pos, mon
 
     if (window_maximize === WindowMaximizeMode.LATE) {
         set_settings_boolean(child_reporter, 'window-maximize', true);
-        await wait_window_settle(child_reporter);
+        await async_sleep(DEFAULT_IDLE_TIMEOUT_MS);
 
         verify_window_geometry(child_reporter, window_size, true, window_pos, monitor_index);
     }
@@ -432,7 +379,7 @@ async function test_unmaximize(reporter, window_size, window_maximize, window_po
     const monitor_index = window_monitor_index(monitor_config);
 
     set_settings_boolean(reporter, 'window-maximize', false);
-    await wait_window_settle(reporter);
+    await async_sleep(DEFAULT_IDLE_TIMEOUT_MS);
     verify_window_geometry(reporter, window_size, false, window_pos, monitor_index);
 }
 
@@ -443,15 +390,15 @@ async function test_unmaximize_correct_size(reporter, window_size, window_size2,
     const monitor_index = window_monitor_index(monitor_config);
 
     set_settings_double(reporter, 'window-size', window_size2);
-    await wait_window_settle(reporter);
+    await async_sleep(DEFAULT_IDLE_TIMEOUT_MS);
     verify_window_geometry(reporter, window_size2, window_size === 1.0 && window_size2 === 1.0 && initially_maximized, window_pos, monitor_index);
 
     set_settings_boolean(reporter, 'window-maximize', true);
-    await wait_window_settle(reporter);
+    await async_sleep(DEFAULT_IDLE_TIMEOUT_MS);
     verify_window_geometry(reporter, window_size2, true, window_pos, monitor_index);
 
     set_settings_boolean(reporter, 'window-maximize', false);
-    await wait_window_settle(reporter);
+    await async_sleep(DEFAULT_IDLE_TIMEOUT_MS);
     verify_window_geometry(reporter, window_size2, false, window_pos, monitor_index);
 }
 
@@ -461,7 +408,7 @@ async function test_unmaximize_on_size_change(reporter, window_size, window_size
     const monitor_index = window_monitor_index(monitor_config);
 
     set_settings_double(reporter, 'window-size', window_size2);
-    await wait_window_settle(reporter);
+    await async_sleep(DEFAULT_IDLE_TIMEOUT_MS);
 
     verify_window_geometry(reporter, window_size2, window_size2 === 1.0, window_pos, monitor_index);
 }
@@ -503,16 +450,16 @@ async function test_resize_xte(reporter, window_size, window_maximize, window_si
     const target = resize_point(target_frame_rect, window_pos, monitor_scale);
 
     await async_run_process(reporter, ['xte', `mousemove ${initial.x} ${initial.y}`, 'mousedown 1']);
-    await wait_window_settle(reporter);
+    await async_sleep(DEFAULT_IDLE_TIMEOUT_MS);
 
     try {
         verify_window_geometry(reporter, window_maximize !== WindowMaximizeMode.NOT_MAXIMIZED ? 1.0 : window_size, false, window_pos, monitor_index);
         await async_run_process(reporter, ['xte', `mousermove ${target.x - initial.x} ${target.y - initial.y}`]);
-        await wait_window_settle(reporter);
+        await async_sleep(DEFAULT_IDLE_TIMEOUT_MS);
     } finally {
         await async_run_process(reporter, ['xte', 'mouseup 1']);
     }
-    await wait_window_settle(reporter);
+    await async_sleep(DEFAULT_IDLE_TIMEOUT_MS);
 
     // TODO: 'grab-op-end' isn't emitted on Wayland when simulting mouse with xte.
     // For now, just call update_size_setting_on_grab_end()
@@ -529,7 +476,7 @@ async function test_change_position(reporter, window_size, window_pos, window_po
     const monitor_index = window_monitor_index(monitor_config);
 
     set_settings_string(reporter, 'window-position', window_pos2);
-    await wait_window_settle(reporter);
+    await async_sleep(DEFAULT_IDLE_TIMEOUT_MS);
 
     verify_window_geometry(reporter, window_size, window_size === 1.0 && initially_maximized, window_pos2, monitor_index);
 }
