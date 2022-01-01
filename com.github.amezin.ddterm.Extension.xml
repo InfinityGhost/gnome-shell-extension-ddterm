@@ -15,5 +15,6 @@
         </method>
 
         <property type="(iiii)" name="TargetRect" access="read"/>
+        <property type="b" name="WindowVisible" access="read"/>
     </interface>
 </node>

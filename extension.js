@@ -30,8 +30,6 @@ const { ConnectionSet } = Me.imports.connectionset;
 const { PanelIconProxy } = Me.imports.panelicon;
 const { WindowManager } = Me.imports.wm;
 
-let tests = null;
-
 var settings = null;
 var window_manager = null;
 
@@ -120,14 +118,13 @@ class ExtensionDBusInterface {
     get TargetRect() {
         return this.GetTargetRect();
     }
+
+    get WindowVisible() {
+        return window_manager.current_window !== null;
+    }
 }
 
 function init() {
-    try {
-        tests = Me.imports.test.extension_tests;
-    } catch {
-        // Tests aren't included in end user (extensions.gnome.org) packages
-    }
 }
 
 function enable() {
@@ -183,6 +180,7 @@ function enable() {
 
     connections.connect(window_manager, 'notify::current-window', () => {
         panel_icon.active = window_manager.current_window !== null;
+        dbus_interface.dbus.emit_property_changed('WindowVisible', new GLib.Variant('b', window_manager.current_window !== null));
     });
 
     connections.connect(window_manager, 'notify::target-rect', () => {
@@ -192,15 +190,9 @@ function enable() {
     Meta.get_window_actors(global.display).forEach(actor => {
         watch_window(actor.meta_window);
     });
-
-    if (tests)
-        tests.enable();
 }
 
 function disable() {
-    if (tests)
-        tests.disable();
-
     Main.wm.removeKeybinding('ddterm-toggle-hotkey');
     Main.wm.removeKeybinding('ddterm-activate-hotkey');
 

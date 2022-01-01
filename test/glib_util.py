@@ -1,8 +1,9 @@
 import contextlib
 import logging
-import sys
 
 from gi.repository import GLib, Gio
+
+from . import dbus_proxy
 
 
 LOGGER = logging.getLogger(__name__)
@@ -19,7 +20,9 @@ DBUS_INTROSPECTABLE_XML = '''
 </node>
 '''
 
-(DBUS_INTROSPECTABLE_INFO,) = Gio.DBusNodeInfo.new_for_xml(DBUS_INTROSPECTABLE_XML).interfaces
+
+class IntrospectableProxy(dbus_proxy.DBusProxy):
+    __introspection_xml__ = DBUS_INTROSPECTABLE_XML
 
 
 @contextlib.contextmanager
@@ -46,11 +49,12 @@ def new_cancellable():
 
 
 class SourceContextManager(contextlib.AbstractContextManager):
-    def __init__(self, source):
+    def __init__(self, source, context):
         self.source = source
+        self.context = context
 
     def __enter__(self):
-        self.source.attach(GLib.MainContext.get_thread_default())
+        self.source.attach(self.context)
         return self
 
     def __exit__(self, *_):
@@ -59,11 +63,11 @@ class SourceContextManager(contextlib.AbstractContextManager):
 
 
 class Timeout(SourceContextManager):
-    def __init__(self, interval, callback=None):
+    def __init__(self, interval, context, callback=None):
         self.timed_out = False
         self.callback = callback
 
-        super().__init__(GLib.timeout_source_new(interval))
+        super().__init__(GLib.timeout_source_new(interval), context)
         self.source.set_callback(self._callback)
 
     def _callback(self, *_):
@@ -126,21 +130,46 @@ class SetError(contextlib.AbstractContextManager, contextlib.ContextDecorator):
         return True
 
 
-def wait_dbus_interface(connection, dest, path, interface, timeout_ms):
-    with contextlib.ExitStack() as cm:
-        context = cm.enter_context(new_main_context())
-        loop = GLib.MainLoop.new(context, False)
-        timeout = cm.enter_context(Timeout(timeout_ms, loop.quit))
-        set_error = SetError(loop)
+class CommonContext(contextlib.ExitStack):
+    def __init__(self, timeout_ms):
+        super().__init__()
+        self.loop = GLib.MainLoop.new(GLib.MainContext.get_thread_default(), False)
+        self.timeout = self.make_timeout(timeout_ms, self.loop.quit)
+        self.set_error = SetError(self.loop)
 
+    def reraise(self):
+        self.set_error.reraise()
+
+        if self.timeout.timed_out:
+            raise TimeoutError()
+
+    def __enter__(self):
+        super().__enter__()
+        self.enter_context(self.timeout)
+        return self
+
+    def __exit__(self, *exc_info):
+        try:
+            self.reraise()
+        finally:
+            return super().__exit__(*exc_info)
+
+    def make_timeout(self, timeout_ms, callback=None):
+        return Timeout(timeout_ms, self.loop.get_context(), callback=callback)
+
+
+def wait_dbus_interface(connection, dest, path, interface, timeout_ms, proxy_class=None):
+    if proxy_class is not None:
+        assert interface == proxy_class.__interface_info__.name
+
+    with CommonContext(timeout_ms) as cm:
         proxy_cm = cm.enter_context(contextlib.ExitStack())
         proxy = None
 
-        @set_error
-        def proxy_ready_cb(_, res):
+        @cm.set_error
+        def proxy_ready_cb(source, res):
             try:
-                nonlocal proxy
-                proxy = Gio.DBusProxy.new_finish(res)
+                source.init_finish(res)
 
             except GLib.Error:
                 LOGGER.exception(
@@ -153,13 +182,17 @@ def wait_dbus_interface(connection, dest, path, interface, timeout_ms):
 
             LOGGER.info(
                 'Created %r proxy for dest=%r, path=%r',
-                proxy.props.g_interface_name,
-                proxy.props.g_name_owner,
-                proxy.props.g_object_path
+                source.props.g_interface_name,
+                source.props.g_name_owner,
+                source.props.g_object_path
             )
-            loop.quit()
 
-        @set_error
+            nonlocal proxy
+            proxy = source
+
+            cm.loop.quit()
+
+        @cm.set_error
         def introspect_done_cb(proxy, res):
             LOGGER.debug(
                 '%s.Introspect() call complete for dest=%r, path=%r',
@@ -173,7 +206,8 @@ def wait_dbus_interface(connection, dest, path, interface, timeout_ms):
 
             except GLib.Error:
                 LOGGER.exception(
-                    'org.freedesktop.DBus.Introspectable.Introspect() failed for dest=%r path=%r',
+                    '%s.Introspect() failed for dest=%r path=%r',
+                    proxy.props.g_interface_name,
                     proxy.props.g_name_owner,
                     proxy.props.g_object_path
                 )
@@ -199,7 +233,7 @@ def wait_dbus_interface(connection, dest, path, interface, timeout_ms):
                 )
 
                 proxy_cm.close()
-                proxy_cm.enter_context(Timeout(100, lambda: introspect(proxy)))
+                proxy_cm.enter_context(cm.make_timeout(100, lambda: introspect(proxy)))
                 return
 
             LOGGER.debug(
@@ -210,13 +244,24 @@ def wait_dbus_interface(connection, dest, path, interface, timeout_ms):
             )
 
             cancellable = proxy_cm.enter_context(new_cancellable())
-            Gio.DBusProxy.new(
-                connection,
-                Gio.DBusProxyFlags.NONE,
-                interface_info,
-                dest,
-                path,
-                interface,
+            if proxy_class is None:
+                proxy = Gio.DBusProxy(
+                    g_connection=connection,
+                    g_name=dest,
+                    g_object_path=path,
+                    g_interface_info=interface_info,
+                    g_interface_name=interface,
+                    g_flags=Gio.DBusProxyFlags.GET_INVALIDATED_PROPERTIES
+                )
+            else:
+                proxy = proxy_class(
+                    g_connection=connection,
+                    g_name=dest,
+                    g_object_path=path
+                )
+
+            proxy.init_async(
+                GLib.PRIORITY_DEFAULT,
                 cancellable,
                 proxy_ready_cb
             )
@@ -230,22 +275,19 @@ def wait_dbus_interface(connection, dest, path, interface, timeout_ms):
             )
 
             cancellable = proxy_cm.enter_context(new_cancellable())
-            proxy.call(
-                'Introspect',
-                None,
-                Gio.DBusCallFlags.NONE,
-                timeout_ms,
-                cancellable,
-                introspect_done_cb
+            proxy.Introspect(
+                _timeout_msec=timeout_ms,
+                _cancellable=cancellable,
+                _callback=introspect_done_cb
             )
 
-        @set_error
-        def introspectable_proxy_ready_cb(_, res):
+        @cm.set_error
+        def introspectable_proxy_ready_cb(proxy, res):
             try:
-                proxy = Gio.DBusProxy.new_finish(res)
+                proxy.init_finish(res)
 
             except GLib.Error:
-                LOGGER.exception('Failed to create org.freedesktop.DBus.Introspectable proxy for dest=%r path=%r', dest, path)
+                LOGGER.exception('Failed to create %r proxy for dest=%r path=%r', proxy.__interface_info__.name, dest, path)
                 raise
 
             LOGGER.info(
@@ -260,15 +302,15 @@ def wait_dbus_interface(connection, dest, path, interface, timeout_ms):
         def try_create_introspectable_proxy():
             proxy_cm.close()
 
-            LOGGER.debug('Trying to create org.freedesktop.DBus.Introspectable proxy for dest=%r, path=%r', dest, path)
+            LOGGER.debug('Trying to create %r proxy for dest=%r, path=%r', IntrospectableProxy.__interface_info__.name, dest, path)
             cancellable = proxy_cm.enter_context(new_cancellable())
-            Gio.DBusProxy.new(
-                connection,
-                Gio.DBusProxyFlags.NONE,
-                DBUS_INTROSPECTABLE_INFO,
-                dest,
-                path,
-                'org.freedesktop.DBus.Introspectable',
+            proxy = IntrospectableProxy(
+                g_connection=connection,
+                g_name=dest,
+                g_object_path=path
+            )
+            proxy.init_async(
+                GLib.PRIORITY_DEFAULT,
                 cancellable,
                 introspectable_proxy_ready_cb
             )
@@ -281,38 +323,27 @@ def wait_dbus_interface(connection, dest, path, interface, timeout_ms):
             lambda *_: proxy_cm.close()
         ))
 
-        loop.run()
-
-        set_error.reraise()
-
-        if timeout.timed_out:
-            raise TimeoutError()
-
+        cm.loop.run()
         return proxy
 
 
 def wait_dbus_connection(address, timeout_ms):
-    with contextlib.ExitStack() as cm:
-        context = cm.enter_context(new_main_context())
-        loop = GLib.MainLoop.new(context, False)
-        timeout = cm.enter_context(Timeout(timeout_ms, loop.quit))
-        set_error = SetError(loop)
-
+    with CommonContext(timeout_ms) as cm:
         connection_cm = cm.enter_context(contextlib.ExitStack())
         connection = None
 
-        @set_error
+        @cm.set_error
         def connection_ready_cb(_, res):
             try:
                 nonlocal connection
                 connection = Gio.DBusConnection.new_for_address_finish(res)
-                loop.quit()
+                cm.loop.quit()
 
             except GLib.Error as ex:
                 if ex.matches(Gio.io_error_quark(), Gio.IOErrorEnum.BROKEN_PIPE):
                     LOGGER.debug('Failed to connect to DBus address %r, trying again', address, exc_info=True)
                     connection_cm.close()
-                    connection_cm.enter_context(Timeout(100, try_connect))
+                    connection_cm.enter_context(cm.make_timeout(100, try_connect))
                 else:
                     LOGGER.exception('Failed to connect to DBus address %r', address)
                     raise
@@ -332,11 +363,19 @@ def wait_dbus_connection(address, timeout_ms):
 
         try_connect()
 
-        loop.run()
-
-        set_error.reraise()
-
-        if timeout.timed_out:
-            raise TimeoutError()
-
+        cm.loop.run()
         return connection
+
+
+def wait_property_value(object, property, value, timeout_ms):
+    with CommonContext(timeout_ms) as cm:
+        @cm.set_error
+        def check(*_):
+            if value == object.get_property(property):
+                cm.loop.quit()
+
+        handler = object.connect(f'notify::{property}', check)
+        cm.callback(object.disconnect, handler)
+
+        if value != object.get_property(property):
+            cm.loop.run()

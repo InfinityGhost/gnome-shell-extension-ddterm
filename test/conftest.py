@@ -1,26 +1,33 @@
+import atexit
 import functools
+import io
 import json
 import logging
 import pathlib
 import shlex
 import subprocess
+import tarfile
 
-from gi.repository import GLib, Gio
 import pytest
+import wand.image
 
-from test.glib_util import Timeout
-
-from . import glib_util
+from . import dbus_proxy, glib_util
 
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_IMAGE = 'ghcr.io/amezin/gnome-shell-pod-34:master'
+DEFAULT_IMAGE = 'ghcr.io/amezin/gnome-shell-pod-32:master'
 DEFAULT_SESSION = 'gnome-xsession'
 
 SRC_DIR = (pathlib.Path(__file__).parent / '..').resolve()
 EXTENSION_UUID = 'ddterm@amezin.github.com'
 PKG_PATH = f'/home/gnomeshell/.local/share/gnome-shell/extensions/{EXTENSION_UUID}'
+
+EXTENSION_DBUS_XML_PATH = pathlib.Path(__file__).resolve().parents[1] / 'com.github.amezin.ddterm.Extension.xml'
+
+
+class ExtensionDBusProxy(dbus_proxy.DBusProxy):
+    __introspection_xml__ = EXTENSION_DBUS_XML_PATH.read_text()
 
 
 def pytest_addoption(parser):
@@ -67,7 +74,7 @@ class Container:
 
 
 @pytest.fixture(scope='session')
-def container(request, podman, pytestconfig):
+def container(podman, pytestconfig):
     container_id = podman(
         'run', '--rm', '-Ptd', '--cap-add', 'SYS_NICE', '--cap-add', 'IPC_LOCK',
         '-v', f'{SRC_DIR}:{PKG_PATH}:ro', pytestconfig.option.image,
@@ -80,8 +87,14 @@ def container(request, podman, pytestconfig):
     def kill():
         podman('kill', container_id)
 
-    request.addfinalizer(kill)
-    return Container(podman, container_id)
+    atexit.register(kill)
+
+    try:
+        yield Container(podman, container_id)
+
+    finally:
+        atexit.unregister(kill)
+        kill()
 
 
 @pytest.fixture(scope='session')
@@ -100,14 +113,14 @@ def container_session_bus_address(container):
 
 
 @pytest.fixture(scope='session')
-def container_session_bus_connection(request, container_session_bus_address, container_session_bus_ready):
+def container_session_bus_connection(container_session_bus_address, container_session_bus_ready):
     bus = glib_util.wait_dbus_connection(container_session_bus_address, timeout_ms=1000)
 
-    def close():
-        bus.close_sync(None)
+    try:
+        yield bus
 
-    request.addfinalizer(close)
-    return bus
+    finally:
+        bus.close_sync(None)
 
 
 @pytest.fixture(scope='session')
@@ -156,20 +169,54 @@ def extension_dbus_interface(session_dbus_interface, enable_extension):
     return session_dbus_interface(
         dest='org.gnome.Shell',
         path='/org/gnome/Shell/Extensions/ddterm',
-        interface='com.github.amezin.ddterm.Extension'
+        interface='com.github.amezin.ddterm.Extension',
+        proxy_class=ExtensionDBusProxy
     )
 
 
 @pytest.fixture(scope='session')
-def journal(request, podman_cmd, container, container_session_bus_ready):
+def journal(podman_cmd, container, container_session_bus_ready):
     cmd = podman_cmd(*container.exec_args, 'journalctl', '-f')
     cmd_str = shlex.join(cmd)
     LOGGER.info('Starting: %s', cmd_str)
     tail = subprocess.Popen(cmd)
 
-    def stop():
+    try:
+        yield tail
+
+    finally:
         tail.terminate()
         tail.wait()
         LOGGER.info('Stopped %s', cmd_str)
 
-    request.addfinalizer(stop)
+
+@pytest.fixture(scope='session')
+def screenshot(container, gnome_shell_session):
+    try:
+        yield
+    finally:
+        screenshot_tar = container.podman('cp', f'{container.container_id}:/run/Xvfb_screen0', '-', stdout=subprocess.PIPE).stdout
+        with tarfile.open(fileobj=io.BytesIO(screenshot_tar)) as tar:
+            for tarinfo in tar:
+                fileobj = tar.extractfile(tarinfo)
+                if not fileobj:
+                    continue
+
+                with fileobj:
+                    with wand.image.Image(file=fileobj, format='xwd') as img:
+                        with img.convert(format='png') as converted:
+                            converted.save(filename=f'{tarinfo.name}.png')
+
+
+@pytest.fixture(scope='session')
+def close_welcome_dialog(shell_dbus_interface):
+    shell_dbus_interface.Eval('(s)', '''
+        if (global.settings.settings_schema.has_key('welcome-dialog-last-shown-version'))
+            global.settings.set_string('welcome-dialog-last-shown-version', '99.0');
+
+        if (Main.welcomeDialog) {
+            const ModalDialog = imports.ui.modalDialog;
+            if (Main.welcomeDialog.state !== ModalDialog.State.CLOSED)
+                Main.welcomeDialog.close();
+        }
+    ''')
