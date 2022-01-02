@@ -25,18 +25,23 @@ jobs:
             session: 'gnome-wayland-nested-dual-monitor'
     env:
       IMAGE: ghcr.io/amezin/gnome-shell-pod-${{ matrix.fedora-version }}:master
+      PY_COLORS: 1
     steps:
     - uses: actions/checkout@v2
     - uses: actions/setup-node@v2-beta
+    - run: sudo apt-get install -y python3-gi python3-wand tox
     - run: npm ci
     - run: sudo podman pull "${{ env.IMAGE }}"
     - run: sudo podman run --rm -i -v "${PWD}:${PWD}" -w "${PWD}" "${{ env.IMAGE }}" xvfb-run make test-deps
-    - run: sudo ./run_test_podman.sh -i "${{ env.IMAGE }}" -s "${{ matrix.session }}"
+    - run: tox -vv --notest --sitepackages
+      working-directory: test
+    - run: tox --sitepackages -- --podman sudo podman --container-image "${{ env.IMAGE }}" --gnome-session "${{ matrix.session }}" --color=yes -n 2
       working-directory: test
     - uses: actions/upload-artifact@v2
       with:
         name: test-${{ matrix.fedora-version }}-${{ matrix.session }}
         path: |
-          test/Xvfb_screen*.png
-          test/journal.txt
+          test/report.html
+          test/junit.xml
+          test/assets
       if: always()
