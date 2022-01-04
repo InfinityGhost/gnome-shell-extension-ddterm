@@ -111,45 +111,45 @@ def test_show_h(bus_call, window_size, window_maximize, window_pos, monitor_conf
         bus_call('TestShow', '(dssis)', window_size, window_maximize, window_pos, monitor_config.current_index, monitor_config.setting)
 
 
-@pytest.mark.parametrize('window_size', SIZE_VALUES)
-@pytest.mark.parametrize('window_maximize', MAXIMIZE_MODES)
-@pytest.mark.parametrize('window_size2', SIZE_VALUES)
-@pytest.mark.parametrize('window_pos', POSITIONS)
-def test_resize_xte(bus_call, window_size, window_maximize, window_size2, window_pos, monitor_config, shell_version, screenshot):
-    with screenshot():
-        version_split = tuple(int(x) for x in shell_version.split('.'))
-        if version_split < (3, 38):
-            if monitor_config.current_index == 1 and window_pos == 'bottom' and window_size2 == 1:
-                pytest.skip('For unknown reason it fails to resize to full height on 2nd monitor')
+#@pytest.mark.parametrize('window_size', SIZE_VALUES)
+#@pytest.mark.parametrize('window_maximize', MAXIMIZE_MODES)
+#@pytest.mark.parametrize('window_size2', SIZE_VALUES)
+#@pytest.mark.parametrize('window_pos', POSITIONS)
+#def test_resize_xte(bus_call, window_size, window_maximize, window_size2, window_pos, monitor_config, shell_version, screenshot):
+#    with screenshot():
+#        version_split = tuple(int(x) for x in shell_version.split('.'))
+#        if version_split < (3, 38):
+#            if monitor_config.current_index == 1 and window_pos == 'bottom' and window_size2 == 1:
+#                pytest.skip('For unknown reason it fails to resize to full height on 2nd monitor')
 
-        bus_call('TestResizeXte', '(dsdsis)', window_size, window_maximize, window_size2, window_pos, monitor_config.current_index, monitor_config.setting)
-
-
-@pytest.mark.parametrize('window_size', SIZE_VALUES)
-@pytest.mark.parametrize(('window_pos', 'window_pos2'), (p for p in itertools.product(POSITIONS, repeat=2) if p[0] != p[1]))
-def test_change_position(bus_call, window_size, window_pos, window_pos2, monitor_config, screenshot):
-    with screenshot():
-        bus_call('TestChangePosition', '(dssis)', window_size, window_pos, window_pos2, monitor_config.current_index, monitor_config.setting)
+#        bus_call('TestResizeXte', '(dsdsis)', window_size, window_maximize, window_size2, window_pos, monitor_config.current_index, monitor_config.setting)
 
 
-@pytest.mark.parametrize('window_size', SIZE_VALUES)
-@pytest.mark.parametrize('window_maximize', MAXIMIZE_MODES)
-@pytest.mark.parametrize('window_pos', POSITIONS)
-def test_unmaximize(bus_call, window_size, window_maximize, window_pos, monitor_config, screenshot):
-    with screenshot():
-        bus_call('TestUnmaximize', '(dssis)', window_size, window_maximize, window_pos, monitor_config.current_index, monitor_config.setting)
+#@pytest.mark.parametrize('window_size', SIZE_VALUES)
+#@pytest.mark.parametrize(('window_pos', 'window_pos2'), (p for p in itertools.product(POSITIONS, repeat=2) if p[0] != p[1]))
+#def test_change_position(bus_call, window_size, window_pos, window_pos2, monitor_config, screenshot):
+#    with screenshot():
+#        bus_call('TestChangePosition', '(dssis)', window_size, window_pos, window_pos2, monitor_config.current_index, monitor_config.setting)
 
 
-@pytest.mark.parametrize('window_size', SIZE_VALUES)
-@pytest.mark.parametrize('window_size2', SIZE_VALUES)
-@pytest.mark.parametrize('window_pos', POSITIONS)
-def test_unmaximize_correct_size(bus_call, window_size, window_size2, window_pos, monitor_config, screenshot):
-    with screenshot():
-        bus_call('TestUnmaximizeCorrectSize', '(ddsis)', window_size, window_size2, window_pos, monitor_config.current_index, monitor_config.setting)
+#@pytest.mark.parametrize('window_size', SIZE_VALUES)
+#@pytest.mark.parametrize('window_maximize', MAXIMIZE_MODES)
+#@pytest.mark.parametrize('window_pos', POSITIONS)
+#def test_unmaximize(bus_call, window_size, window_maximize, window_pos, monitor_config, screenshot):
+#    with screenshot():
+#        bus_call('TestUnmaximize', '(dssis)', window_size, window_maximize, window_pos, monitor_config.current_index, monitor_config.setting)
 
 
-@pytest.mark.parametrize(('window_size', 'window_size2'), (p for p in itertools.product(SIZE_VALUES, repeat=2) if p[0] != p[1]))
-@pytest.mark.parametrize('window_pos', POSITIONS)
-def test_unmaximize_on_size_change(bus_call, window_size, window_size2, window_pos, monitor_config, screenshot):
-    with screenshot():
-        bus_call('TestUnmaximizeOnSizeChange', '(ddsis)', window_size, window_size2, window_pos, monitor_config.current_index, monitor_config.setting)
+#@pytest.mark.parametrize('window_size', SIZE_VALUES)
+#@pytest.mark.parametrize('window_size2', SIZE_VALUES)
+#@pytest.mark.parametrize('window_pos', POSITIONS)
+#def test_unmaximize_correct_size(bus_call, window_size, window_size2, window_pos, monitor_config, screenshot):
+#    with screenshot():
+#        bus_call('TestUnmaximizeCorrectSize', '(ddsis)', window_size, window_size2, window_pos, monitor_config.current_index, monitor_config.setting)
+
+
+#@pytest.mark.parametrize(('window_size', 'window_size2'), (p for p in itertools.product(SIZE_VALUES, repeat=2) if p[0] != p[1]))
+#@pytest.mark.parametrize('window_pos', POSITIONS)
+#def test_unmaximize_on_size_change(bus_call, window_size, window_size2, window_pos, monitor_config, screenshot):
+#    with screenshot():
+#        bus_call('TestUnmaximizeOnSizeChange', '(ddsis)', window_size, window_size2, window_pos, monitor_config.current_index, monitor_config.setting)
