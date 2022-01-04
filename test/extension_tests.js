@@ -41,6 +41,7 @@ const window_trace = new ConnectionSet();
 const CURSOR_TRACKER_MOVED_SIGNAL = GObject.signal_lookup('cursor-moved', Meta.CursorTracker) ? 'cursor-moved' : 'position-invalidated';
 const CURSOR_TRACKER = Meta.CursorTracker.get_for_display(global.display);
 const WAIT_TIMEOUT_MS = 2000;
+const START_TIMEOUT_MS = 10000;
 
 const LOG_DOMAIN = 'ddterm-test';
 
@@ -108,23 +109,47 @@ async function setup() {
     if (global.settings.settings_schema.has_key('welcome-dialog-last-shown-version'))
         global.settings.set_string('welcome-dialog-last-shown-version', '99.0');
 
-    if (Main.layoutManager._startingUp)
-        await async_wait_signal(Main.layoutManager, 'startup-complete');
+    if (Main.layoutManager._startingUp) {
+        message('Waiting for startup to complete');
+        await async_wait_signal(
+            Main.layoutManager,
+            'startup-complete',
+            () => !Main.layoutManager._startingUp,
+            START_TIMEOUT_MS
+        );
+        message('Startup complete');
+    }
 
     if (Main.welcomeDialog) {
         const ModalDialog = imports.ui.modalDialog;
         if (Main.welcomeDialog.state !== ModalDialog.State.CLOSED) {
+            message('Closing welcome dialog');
+            const wait_close = async_wait_signal(
+                Main.welcomeDialog,
+                'closed',
+                () => Main.welcomeDialog.state === ModalDialog.State.CLOSED
+            );
             Main.welcomeDialog.close();
-            await async_wait_signal(Main.welcomeDialog, 'closed');
+            await wait_close;
+            message('Welcome dialog closed');
         }
     }
 
     if (Main.overview.visible) {
+        message('Hiding overview');
+        const wait_hide = async_wait_signal(
+            Main.overview,
+            'hidden',
+            () => !Main.overview.visible
+        );
         Main.overview.hide();
-        await async_wait_signal(Main.overview, 'hidden');
+        await wait_hide;
+        message('Overview hidden');
     }
 
-    await async_show_window(10000);
+    message('Starting the app/showing window');
+    await async_show_window(START_TIMEOUT_MS);
+    message('Window shown');
 }
 
 function setup_window_trace() {
@@ -283,7 +308,7 @@ function async_show_window(timeout_ms = WAIT_TIMEOUT_MS) {
     }), timeout_ms);
 }
 
-function async_wait_signal(object, signal, predicate = null) {
+function async_wait_signal(object, signal, predicate = null, timeout_ms = WAIT_TIMEOUT_MS) {
     return with_timeout(new Promise(resolve => {
         const pred_check = () => {
             if (!predicate())
@@ -298,7 +323,7 @@ function async_wait_signal(object, signal, predicate = null) {
             pred_check();
         else
             predicate = () => true;
-    }));
+    }), timeout_ms);
 }
 
 function async_run_process(argv) {
