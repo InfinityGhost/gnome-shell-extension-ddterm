@@ -120,6 +120,8 @@ async function setup() {
         message('Startup complete');
     }
 
+    imports.gi.St.Settings.get().inhibit_animations();
+
     if (Main.welcomeDialog) {
         const ModalDialog = imports.ui.modalDialog;
         if (Main.welcomeDialog.state !== ModalDialog.State.CLOSED) {
@@ -150,6 +152,8 @@ async function setup() {
     message('Starting the app/showing window');
     await async_show_window(START_TIMEOUT_MS);
     message('Window shown');
+
+    await async_idle();
 }
 
 function setup_window_trace() {
@@ -189,7 +193,7 @@ function async_sleep(ms) {
 }
 
 function async_idle() {
-    return new Promise(resolve => GLib.idle_add(GLib.PRIORITY_LOW, () => {
+    return new Promise(resolve => Meta.later_add(Meta.LaterType.IDLE, () => {
         resolve();
         return GLib.SOURCE_REMOVE;
     }));
@@ -220,13 +224,16 @@ function async_wait_frame() {
 
         message('Waiting for next frame');
 
-        const stage = Meta.get_backend().get_stage();
-        if (actor.is_effectively_on_stage_view) {
+        const stage = global.get_stage();
+        if (actor.peek_stage_views) {
             const handler = stage.connect('after-paint', (_, view) => {
-                if (actor.is_effectively_on_stage_view(view)) {
+                const views = actor.peek_stage_views();
+                if (views.includes(view)) {
                     stage.disconnect(handler);
                     message('Frame painted');
                     async_idle().then(resolve);
+                } else {
+                    message(`Paint happened, but for wrong view: ${view}`);
                 }
             });
         } else {
@@ -252,18 +259,18 @@ function hide_window_async_wait() {
             return;
         }
 
-        const check_cb = () => {
-            if (Extension.window_manager.current_window)
-                return;
-
-            Extension.window_manager.disconnect(handler);
-            message('Window hidden');
-            resolve();
-        };
-
-        const handler = Extension.window_manager.connect('notify::current-window', check_cb);
-
         message('Hiding the window');
+
+        const wm = Extension.window_manager;
+        async_wait_signal(
+            wm,
+            'notify::current-window',
+            () => wm.current_window === null
+        ).then(() => {
+            message('Window hidden');
+            return wait_frame_wayland();
+        }).then(resolve);
+
         Extension.toggle();
     }));
 }
@@ -272,47 +279,42 @@ function async_show_window(timeout_ms = WAIT_TIMEOUT_MS) {
     return with_timeout(new Promise(resolve => {
         message('Waiting for the window to show');
 
-        const connections = new ConnectionSet();
+        const wm = Extension.window_manager;
+        JsUnit.assertNull(wm.current_window);
 
-        const frame_cb = () => {
-            message('First frame rendered');
-            connections.disconnect();
-            resolve();
-        };
-
-        const check_cb = () => {
-            const current_win = Extension.window_manager.current_window;
-            message(`Current window changed: ${current_win}`);
-
-            if (rendered_windows.includes(current_win))
-                frame_cb();
-        };
-
-        const rendered_windows = [];
-        connections.connect(global.display, 'window-created', (_, win) => {
+        async_wait_signal(
+            wm,
+            'notify::current-window',
+            () => wm.current_window !== null,
+            timeout_ms
+        ).then(() => {
+            const win = wm.current_window;
+            message(`Current window: ${win}`);
             const actor = win.get_compositor_private();
-            debug(`Window ${win} created, actor ${actor}`);
+            return async_wait_signal(
+                actor,
+                'notify::mapped',
+                () => actor.mapped,
+                timeout_ms
+            );
+        }).then(() => {
+            message('Window actor mapped');
+            return wait_frame_wayland();
+        }).then(wait_frame_wayland).then(resolve);
 
-            connections.connect(actor, 'first-frame', () => {
-                debug(`Window ${win} rendered`);
-                rendered_windows.push(win);
-
-                if (win === Extension.window_manager.current_window)
-                    frame_cb();
-            });
-        });
-
-        connections.connect(Extension.window_manager, 'notify::current-window', check_cb);
-        JsUnit.assertNull(Extension.window_manager.current_window);
         Extension.toggle();
     }), timeout_ms);
 }
 
-function async_wait_signal(object, signal, predicate = null, timeout_ms = WAIT_TIMEOUT_MS) {
+function async_wait_signal(object, signal, predicate = null, timeout_ms = WAIT_TIMEOUT_MS, recheck_interval = null) {
     return with_timeout(new Promise(resolve => {
         const pred_check = () => {
-            if (!predicate())
+            if (!predicate()) {
+                if (recheck_interval !== null)
+                    async_sleep(recheck_interval).then(pred_check);
+
                 return;
+            }
 
             object.disconnect(handler_id);
             resolve();
@@ -323,6 +325,9 @@ function async_wait_signal(object, signal, predicate = null, timeout_ms = WAIT_T
             pred_check();
         else
             predicate = () => true;
+
+        if (recheck_interval !== null)
+            async_sleep(recheck_interval).then(pred_check);
     }), timeout_ms);
 }
 
@@ -447,24 +452,25 @@ async function maximize_window(window_pos, window_size, value = true) {
 async function test_show(window_size, window_maximize, window_pos, current_monitor, window_monitor) {
     message(`Starting test with window size=${window_size}, maximize=${window_maximize}, position=${window_pos}`);
 
-    if (Extension.window_manager.current_window) {
+    if (Extension.window_manager.current_window)
         await hide_window_async_wait();
-        await wait_frame_wayland();
-    }
 
     if (current_monitor !== global.display.get_current_monitor()) {
         const monitor_rect = Main.layoutManager.monitors[current_monitor];
         await async_run_process(['xte', `mousemove ${monitor_rect.x + Math.floor(monitor_rect.width / 2)} ${monitor_rect.y + Math.floor(monitor_rect.height / 2)}`]);
 
         message(`Waiting for current monitor = ${current_monitor}`);
+        const check = () => {
+            // 'current' monitor doesn't seem to be updated in nested mode
+            Meta.MonitorManager.get().emit('monitors-changed-internal');
+            return current_monitor === global.display.get_current_monitor();
+        };
         await async_wait_signal(
             CURSOR_TRACKER,
             CURSOR_TRACKER_MOVED_SIGNAL,
-            () => {
-                // 'current' monitor doesn't seem to be updated in nested mode
-                Meta.MonitorManager.get().emit('monitors-changed-internal');
-                return current_monitor === global.display.get_current_monitor();
-            }
+            check,
+            WAIT_TIMEOUT_MS,
+            25
         );
         await async_idle();
     }
@@ -477,7 +483,6 @@ async function test_show(window_size, window_maximize, window_pos, current_monit
     set_settings_string('window-monitor', window_monitor);
 
     await async_show_window();
-    await wait_frame_wayland();
 
     const monitor_index = window_monitor_index(window_monitor);
     const should_maximize = window_maximize === WindowMaximizeMode.EARLY || (window_size === 1.0 && settings.get_boolean('window-maximize'));
@@ -550,46 +555,73 @@ function resize_point(frame_rect, window_pos, monitor_scale) {
     return { x, y };
 }
 
+function wait_mouse_at(x, y, mods = null, timeout_ms = WAIT_TIMEOUT_MS) {
+    return with_timeout(async () => {
+        const check = () => {
+            const [c_x, c_y, c_mods] = global.get_pointer();
+            debug(`Mouse at x: ${c_x} y: ${c_y}, modifiers: ${c_mods}`);
+            return (x === c_x && y === c_y) && (mods === null || c_mods === mods);
+        };
+
+        message(`Waiting for mouse to move to x: ${x} y: ${y}`);
+        await async_wait_signal(
+            CURSOR_TRACKER,
+            CURSOR_TRACKER_MOVED_SIGNAL,
+            check,
+            WAIT_TIMEOUT_MS,
+            25
+        );
+
+        await async_idle();
+    }, timeout_ms);
+}
+
 async function test_resize_xte(window_size, window_maximize, window_size2, window_pos, current_monitor, window_monitor) {
     await test_show(window_size, window_maximize, window_pos, current_monitor, window_monitor);
 
     const monitor_index = window_monitor_index(window_monitor);
     const workarea = Main.layoutManager.getWorkAreaForMonitor(monitor_index);
     const monitor_scale = global.display.get_monitor_scale(monitor_index);
-
-    const initial_frame_rect = Extension.window_manager.current_window.get_frame_rect();
+    const window = Extension.window_manager.current_window;
+    const initial_frame_rect = window.get_frame_rect();
     const initial = resize_point(initial_frame_rect, window_pos, monitor_scale);
 
     const target_frame_rect = Extension.window_manager.target_rect_for_workarea_size(workarea, monitor_scale, window_size2);
     const target = resize_point(target_frame_rect, window_pos, monitor_scale);
 
-    await async_run_process(['xte', `mousemove ${initial.x} ${initial.y}`, 'mousedown 1']);
-    await async_wait_signal(
-        CURSOR_TRACKER,
-        CURSOR_TRACKER_MOVED_SIGNAL,
-        () => {
-            const [x, y] = CURSOR_TRACKER.get_hot();
-            info(`mouse move, hotspot x=${x} y=${y}`);
-            return initial.x === x && initial.y === y;
-        }
+    const maximized_prop = ['top', 'bottom'].includes(window_pos) ? 'maximized-vertically' : 'maximized-horizontally';
+    const unmaximize_wait = async_wait_signal(
+        window,
+        `notify::${maximized_prop}`,
+        () => !window[maximized_prop]
     );
-    await async_wait_frame();
+    const resize_wait = async_wait_signal(window, 'size-changed');
+
+    await async_run_process(['xte', `mousemove ${initial.x} ${initial.y}`, 'mousedown 1']);
+    await wait_mouse_at(initial.x, initial.y, 256);
+    await unmaximize_wait;
+    await resize_wait;
+    await wait_frame_wayland();
 
     try {
         verify_window_geometry(window_maximize !== WindowMaximizeMode.NOT_MAXIMIZED ? 1.0 : window_size, false, window_pos, monitor_index);
-        if (target.x !== initial.x || target.y !== initial.y) {
+        if (target.x !== initial.x || target.y !== initial.y)
             await async_run_process(['xte', `mousermove ${target.x - initial.x} ${target.y - initial.y}`]);
-            await async_wait_frame();
-        }
+
+        await wait_mouse_at(target.x, target.y, 256);
+        await wait_frame_wayland();
     } finally {
         await async_run_process(['xte', 'mouseup 1']);
     }
+
+    await wait_mouse_at(target.x, target.y, 0);
 
     // TODO: 'grab-op-end' isn't emitted on Wayland when simulting mouse with xte.
     // For now, just call update_size_setting_on_grab_end()
     if (Meta.is_wayland_compositor())
         Extension.window_manager.update_size_setting_on_grab_end(global.display, Extension.window_manager.current_window);
 
+    await wait_frame_wayland();
     verify_window_geometry(window_size2, false, window_pos, monitor_index);
 }
 
