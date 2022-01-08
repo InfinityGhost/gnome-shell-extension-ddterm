@@ -157,8 +157,7 @@ async function setup() {
         message('Overview hidden');
     }
 
-    Extension.toggle();
-    await async_wait_current_window(START_TIMEOUT_MS);
+    await async_show_window(START_TIMEOUT_MS);
 }
 
 function setup_window_trace() {
@@ -197,6 +196,17 @@ function async_sleep(ms) {
     }));
 }
 
+function idle() {
+    return new Promise(resolve => Meta.later_add(Meta.LaterType.IDLE, () => {
+        resolve();
+        return GLib.SOURCE_REMOVE;
+    }));
+}
+
+function leisure() {
+    return new Promise(resolve => global.run_at_leisure(resolve));
+}
+
 function with_timeout(promise, timeout_ms = WAIT_TIMEOUT_MS) {
     return Promise.race([
         promise,
@@ -229,32 +239,43 @@ function hide_window_async_wait() {
     }));
 }
 
-function async_wait_current_window(timeout_ms = WAIT_TIMEOUT_MS) {
+function async_show_window(timeout_ms = WAIT_TIMEOUT_MS) {
     return with_timeout(new Promise(resolve => {
         message('Waiting for the window to show');
 
-        const shown_handler = new ConnectionSet();
+        const connections = new ConnectionSet();
+
+        const frame_cb = () => {
+            message('First frame rendered');
+            connections.disconnect();
+            leisure().then(resolve);
+        };
 
         const check_cb = () => {
             const current_win = Extension.window_manager.current_window;
+            message(`Current window changed: ${current_win}`);
 
-            if (!current_win)
-                return;
-
-            shown_handler.disconnect();
-
-            if (current_win.is_hidden()) {
-                shown_handler.connect(current_win, 'shown', check_cb);
-                return;
-            }
-
-            Extension.window_manager.disconnect(win_handler);
-            message('Window shown');
-            resolve();
+            if (rendered_windows.includes(current_win))
+                frame_cb();
         };
 
-        const win_handler = Extension.window_manager.connect('notify::current-window', check_cb);
-        check_cb();
+        const rendered_windows = [];
+        connections.connect(global.display, 'window-created', (_, win) => {
+            const actor = win.get_compositor_private();
+            debug(`Window ${win} created, actor ${actor}`);
+
+            connections.connect(actor, 'first-frame', () => {
+                debug(`Window ${win} rendered`);
+                rendered_windows.push(win);
+
+                if (win === Extension.window_manager.current_window)
+                    frame_cb();
+            });
+        });
+
+        connections.connect(Extension.window_manager, 'notify::current-window', check_cb);
+        JsUnit.assertNull(Extension.window_manager.current_window);
+        Extension.toggle();
     }), timeout_ms);
 }
 
@@ -317,10 +338,7 @@ function async_wait_signal(object, signal, predicate = () => true, timeout_ms = 
                 return;
 
             object.disconnect(handler_id);
-            GLib.idle_add(GLib.PRIORITY_LOW, () => {
-                resolve();
-                return GLib.SOURCE_REMOVE;
-            });
+            resolve();
         };
 
         const handler_id = object.connect(signal, pred_check);
@@ -459,10 +477,7 @@ async function test_show(window_size, window_maximize, window_pos, current_monit
     set_settings_string('window-position', window_pos);
     set_settings_string('window-monitor', window_monitor);
 
-    Extension.toggle();
-
-    await async_wait_current_window();
-    await wait_window_settle();
+    await async_show_window();
 
     const monitor_index = window_monitor_index(window_monitor);
     const should_maximize = window_maximize === WindowMaximizeMode.EARLY || (window_size === 1.0 && settings.get_boolean('window-maximize'));
