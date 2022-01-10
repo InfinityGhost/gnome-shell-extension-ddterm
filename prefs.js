@@ -136,6 +136,10 @@ function createPrefsWidgetClass(resource_path, util) {
                 'window_type_hint_combo',
                 'window_size_adjustment',
                 'window_size_scale',
+                'window_padding_adjustment',
+                'window_padding_scale',
+                'window_scale_adjustment',
+                'window_scale_scale',
                 'window_pos_combo',
                 'shortcuts_treeview',
                 'show_animation_combo',
@@ -262,8 +266,15 @@ function createPrefsWidgetClass(resource_path, util) {
                 this.settings_bind('background-opacity', this.opacity_adjustment, 'value');
                 this.set_scale_value_format_percent(this.opacity_scale);
                 this.bind_sensitive('transparent-background', this.opacity_scale.parent);
+                
                 this.settings_bind('window-size', this.window_size_adjustment, 'value');
                 this.set_scale_value_format_percent(this.window_size_scale);
+                
+                this.settings_bind('window-padding', this.window_padding_adjustment, 'value');
+                this.set_scale_value_format_percent(this.window_padding_scale);
+
+                this.settings_bind('window-scaling', this.window_scale_adjustment, 'value');
+                this.set_scale_value_format_percent(this.window_scale_scale);
 
                 this.bind_sensitive('use-theme-colors', this.color_scheme_editor, true);
 

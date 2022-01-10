@@ -373,7 +373,7 @@ var WindowManager = GObject.registerClass(
             this._update_target_rect();
         }
 
-        target_rect_for_workarea_size(workarea, monitor_scale, size) {
+        target_rect_for_workarea_size(workarea, monitor_scale, size, scale, padding) {
             const target_rect = workarea.copy();
 
             if (this.resize_x) {
@@ -386,8 +386,14 @@ var WindowManager = GObject.registerClass(
                 target_rect.height *= size;
                 target_rect.height -= target_rect.height % monitor_scale;
 
-                if (this.right_or_bottom)
-                    target_rect.y += workarea.height - target_rect.height;
+                target_rect.width *= scale;
+                target_rect.x += target_rect.width / 2;
+
+                if (this.right_or_bottom) {
+                    target_rect.y += workarea.height - target_rect.height - padding;
+                } else {
+                    target_rect.y += padding;
+                }
             }
 
             return target_rect;
@@ -401,7 +407,9 @@ var WindowManager = GObject.registerClass(
             this.current_target_rect = this.target_rect_for_workarea_size(
                 this.current_workarea,
                 this.current_monitor_scale,
-                this.settings.get_double('window-size')
+                this.settings.get_double('window-size'),
+                this.settings.get_double('window-scale'),
+                this.settings.get_double('window-padding')
             );
 
             if (!prev_target_rect || !this.current_target_rect.equal(prev_target_rect)) {
